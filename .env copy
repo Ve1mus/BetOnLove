@@ -1,0 +1,8 @@
+# Telegram Bot token — get it from @BotFather
+BOT_TOKEN=
+
+# Players: TelegramUserID:Name, comma-separated (get IDs from @userinfobot)
+PLAYERS=111111111:Alice,222222222:Bob,333333333:Carol,444444444:Dave
+
+# Group chat ID — run /chatid in your group chat to find it
+CHAT_ID=
