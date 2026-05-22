@@ -288,20 +288,36 @@ async def cmd_stopbet(message: Message):
         await message.answer("⚠️ Ставки уже заморожены!")
         return
 
+    not_bet = [p for p in PLAYERS if not ep["bets"][p]]
+
+    if not_bet and not ep.get("stopbet_warned"):
+        ep["stopbet_warned"] = True
+        save_data(data)
+        tags = " ".join(
+            f'<a href="tg://user?id={PLAYER_IDS_BY_NAME[p]}">{p}</a>'
+            for p in not_bet
+        )
+        await message.answer(
+            f"⚠️ Не все сделали ставки: {tags}\n\n"
+            f"Введи /stopbet ещё раз чтобы всё равно закрыть приём ставок.",
+            parse_mode="HTML"
+        )
+        return
+
     ep["bets_locked"] = True
     save_data(data)
 
-    not_bet = [p for p in PLAYERS if not ep["bets"][p]]
-    msg = "🔒 Приём ставок закрыт!"
     if not_bet:
         tags = " ".join(
             f'<a href="tg://user?id={PLAYER_IDS_BY_NAME[p]}">{p}</a>'
             for p in not_bet
         )
-        msg += f"\n\n⚠️ Не сделали ставки: {tags}"
+        await message.answer(
+            f"🔒 Приём ставок закрыт!\n\n⚠️ Без ставок: {tags}",
+            parse_mode="HTML"
+        )
     else:
-        msg += "\n\n✅ Все игроки сделали ставки."
-    await message.answer(msg, parse_mode="HTML")
+        await message.answer("🔒 Приём ставок закрыт! ✅ Все поставили.")
 
 
 @dp.message(Command("result"))
@@ -322,16 +338,6 @@ async def cmd_result(message: Message):
         await message.answer(
             "Формат: /result 1й, 2й, 3й, 4й, 5й\n"
             "(перечисли всех в порядке мест — бот сам посчитает ставки)"
-        )
-        return
-
-    not_bet = [p for p in PLAYERS if not ep["bets"][p]]
-    if not_bet and not ep.get("result_warned"):
-        ep["result_warned"] = True
-        save_data(data)
-        await message.answer(
-            f"⚠️ Не все сделали ставки: {', '.join(not_bet)}\n\n"
-            f"Введи /result снова, если хочешь продолжить без них."
         )
         return
 
@@ -506,7 +512,7 @@ async def cmd_cancel(message: Message):
     ep["bets"] = {p: [] for p in PLAYERS}
     ep["bets_locked"] = False
     ep["results"] = []
-    ep.pop("result_warned", None)
+    ep.pop("stopbet_warned", None)
     save_data(data)
 
     await message.answer("✅ Раунд отменён. Все ставки очищены.")
