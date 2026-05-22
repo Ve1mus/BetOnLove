@@ -84,6 +84,44 @@ def slot_positions(slot_label, slot_index=None):
     return nums
 
 
+def is_grouped(results):
+    return bool(results) and isinstance(results[0], list)
+
+
+def score_bets(player_bets, results, slots):
+    """Возвращает (total_score, [win_descriptions])."""
+    total = 0
+    wins = []
+    if is_grouped(results):
+        for bet in player_bets:
+            slot_idx = slots.index(bet["slot"]) if bet["slot"] in slots else None
+            if slot_idx is None or slot_idx >= len(results):
+                continue
+            group = results[slot_idx]
+            if any(fuzzy_match(bet["pair"], member) for member in group):
+                total += bet["amount"]
+                wins.append(f"{', '.join(group)} ({bet['slot']}) +{bet['amount']}")
+    else:
+        for bet in player_bets:
+            slot_idx = slots.index(bet["slot"]) if bet["slot"] in slots else None
+            positions = slot_positions(bet["slot"], slot_idx)
+            for pos in positions:
+                if 1 <= pos <= len(results):
+                    if fuzzy_match(bet["pair"], results[pos - 1]):
+                        total += bet["amount"]
+                        wins.append(f"{results[pos-1]} ({bet['slot']}) +{bet['amount']}")
+                        break
+    return total, wins
+
+
+def format_results(results, slots=None):
+    if is_grouped(results):
+        if slots and len(slots) == len(results):
+            return "\n".join([f"  {slots[i]}: {', '.join(g)}" for i, g in enumerate(results)])
+        return "\n".join([f"  Группа {i+1}: {', '.join(g)}" for i, g in enumerate(results)])
+    return "\n".join([f"  {i+1}. {r}" for i, r in enumerate(results)])
+
+
 def get_current_episode(data):
     if data["episodes"]:
         return data["episodes"][-1]
@@ -116,9 +154,9 @@ async def cmd_help(message: Message):
         "  <code>/result хилькевич, ершов, башаров, олимпиец, стогниенко</code>\n\n"
         "/cancel — отменить текущий раунд\n\n"
         "<b>🎯 Игроки</b>\n"
-        "/bet — сделать ставку (ровно 300 очков)\n"
+        "/bet — сделать ставку (300 очков при нескольких слотах, 100 при одном)\n"
         "  <code>/bet хилькевич 100, олимпийцы 150, ершов 50</code>\n"
-        "  При испытании: <code>/bet хилькевич 300</code>\n\n"
+        "  При одном слоте: <code>/bet хилькевич 100</code>\n\n"
         "/mybets — мои ставки в текущем раунде\n"
         "/myresult — мои итоги по всем раундам\n\n"
         "<b>📊 Просмотр</b>\n"
@@ -150,7 +188,10 @@ async def cmd_newbet(message: Message):
         ep_name, slots_text = text.split(":", 1)
         ep_name = ep_name.strip()
     else:
-        ep_name = f"Раунд {len(data['episodes']) + 1}"
+        n = len(data["episodes"]) + 1
+        seriya = (n - 1) // 3 + 1
+        ispytanie = (n - 1) % 3 + 1
+        ep_name = f"{seriya} серия, испытание {ispytanie}"
         slots_text = text
 
     slots = [s.strip() for s in slots_text.split(",") if s.strip()]
@@ -158,10 +199,13 @@ async def cmd_newbet(message: Message):
         await message.answer("❌ Не указаны слоты для ставок!")
         return
 
+    bet_total = 100 if len(slots) == 1 else 300
+
     episode = {
         "id": len(data["episodes"]) + 1,
         "name": ep_name,
         "slots": slots,
+        "bet_total": bet_total,
         "bets": {p: [] for p in PLAYERS},
         "bets_locked": False,
         "results": [],
@@ -172,11 +216,19 @@ async def cmd_newbet(message: Message):
     save_data(data)
 
     slots_display = ", ".join(slots)
+
+    if len(slots) == 1 and " или " in slots[0]:
+        parts = [p.strip() for p in slots[0].split(" или ", maxsplit=1)]
+        fmt = f"Варианты:\n  /bet {parts[0]} {bet_total}\n  /bet {parts[1]} {bet_total}"
+    elif len(slots) == 1:
+        fmt = f"Формат: /bet имя {bet_total}"
+    else:
+        fmt = f"Формат: /bet пара1 сумма1, пара2 сумма2, ...\nВсего нужно поставить ровно {bet_total} очков."
+
     await message.answer(
         f"✅ {ep_name} открыт!\n\n"
         f"Ставки на: {slots_display}\n\n"
-        f"Формат: /bet пара1 сумма1, пара2 сумма2, ...\n"
-        f"Всего нужно поставить ровно 300 очков."
+        f"{fmt}"
     )
 
 
@@ -211,6 +263,8 @@ async def cmd_bet(message: Message):
     normalized = re.sub(r'[|\n]+', ',', bets_text)
     bet_entries = [b.strip() for b in normalized.split(",") if b.strip()]
     slots = ep["slots"]
+
+    bet_total = ep.get("bet_total", 300)
 
     if len(bet_entries) != len(slots):
         await message.answer(
@@ -251,11 +305,11 @@ async def cmd_bet(message: Message):
             "amount": amount
         })
 
-    if total_amount != 300:
-        diff = 300 - total_amount
+    if total_amount != bet_total:
+        diff = bet_total - total_amount
         hint = f"не хватает {diff}" if diff > 0 else f"лишних {-diff}"
         await message.answer(
-            f"❌ Сумма должна быть ровно 300! У тебя {total_amount} ({hint} очков)."
+            f"❌ Сумма должна быть ровно {bet_total}! У тебя {total_amount} ({hint} очков)."
         )
         return
 
@@ -336,33 +390,31 @@ async def cmd_result(message: Message):
     result_text = message.text.replace("/result", "").strip()
     if not result_text:
         await message.answer(
-            "Формат: /result 1й, 2й, 3й, 4й, 5й\n"
-            "(перечисли всех в порядке мест — бот сам посчитает ставки)"
+            "Обычный формат: /result 1й, 2й, 3й, 4й, 5й\n"
+            "Групповой (испытания): /result победитель; прошли1, прошли2; не прошли1, не прошли2"
         )
         return
 
-    results = [r.strip() for r in result_text.split(",")]
+    if ";" in result_text:
+        groups = [g.strip() for g in result_text.split(";")]
+        results = [[m.strip() for m in g.split(",") if m.strip()] for g in groups if g.strip()]
+    else:
+        results = [r.strip() for r in result_text.split(",")]
 
     round_scores = {p: 0 for p in PLAYERS}
     win_details = {p: [] for p in PLAYERS}
 
     for player in PLAYERS:
-        for bet in ep["bets"][player]:
-            slot_idx = ep["slots"].index(bet["slot"]) if bet["slot"] in ep["slots"] else None
-            positions = slot_positions(bet["slot"], slot_idx)
-            for pos in positions:
-                if 1 <= pos <= len(results):
-                    if fuzzy_match(bet["pair"], results[pos - 1]):
-                        round_scores[player] += bet["amount"]
-                        win_details[player].append(f"{results[pos-1]} ({bet['slot']}) +{bet['amount']}")
-                        break
-        data["scores"][player] += round_scores[player]
+        score, wins = score_bets(ep["bets"][player], results, ep["slots"])
+        round_scores[player] = score
+        win_details[player] = wins
+        data["scores"][player] += score
 
     ep["results"] = results
     ep["closed"] = True
     save_data(data)
 
-    results_display = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(results)])
+    results_display = format_results(results, ep.get("slots"))
 
     player_lines = []
     for p in PLAYERS:
@@ -407,19 +459,11 @@ async def cmd_myresult(message: Message):
             lines.append("  Ставок не было\n")
             continue
 
-        ep_total = 0
+        ep_total, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
+        won_slots = {w.split("(")[1].split(")")[0].strip() for w in wins}
         for bet in player_bets:
-            slot_idx = ep["slots"].index(bet["slot"]) if bet["slot"] in ep.get("slots", []) else None
-            positions = slot_positions(bet["slot"], slot_idx)
-            won = False
-            for pos in positions:
-                if 1 <= pos <= len(ep["results"]):
-                    if fuzzy_match(bet["pair"], ep["results"][pos - 1]):
-                        won = True
-                        break
-            if won:
+            if bet["slot"] in won_slots:
                 lines.append(f"  ✅ {bet['slot']}: {bet['pair']} +{bet['amount']}")
-                ep_total += bet["amount"]
             else:
                 lines.append(f"  ❌ {bet['slot']}: {bet['pair']} 0")
         lines.append(f"  Итого: +{ep_total}\n")
@@ -479,8 +523,7 @@ async def cmd_status(message: Message):
     msg = f"📊 {ep['name']} [{status}]\n\nСлоты: {slots_display}\n\nСтавки:\n{bets_text}"
 
     if ep["results"]:
-        results_text = "\n".join([f"  {i+1}. {r}" for i, r in enumerate(ep["results"])])
-        msg += f"\n\nРезультаты:\n{results_text}"
+        msg += f"\n\nРезультаты:\n{format_results(ep['results'], ep.get('slots'))}"
 
     await message.answer(msg)
 
