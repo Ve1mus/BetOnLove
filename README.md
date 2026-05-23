@@ -5,7 +5,7 @@
 <a name="русский"></a>
 # Ставка на любовь — Telegram-бот
 
-Бот для группового чата на 4 игроков. Друзья делают ставки на участников реалити-шоу.
+Бот для группового чата. Друзья делают ставки на участников реалити-шоу.
 
 ## Быстрый старт
 
@@ -32,11 +32,12 @@ python bot.py
 
 ## Флоу раунда
 
-### Обычный раунд
+### Обычный раунд (несколько слотов)
 
 ```
 Ведущий:  /newbet Серия 6: 1 место, 2–3 место, 4–5 место
 Бот:      ✅ Серия 6 открыт! Ставки на: 1 место, 2–3 место, 4–5 место
+          Всего нужно поставить ровно 300 очков.
 
 Игрок1:   /bet хилькевич 100, олимпийцы 150, ершов 50
 Бот:      ✅ Игрок1, ставка принята!
@@ -45,7 +46,12 @@ python bot.py
             4–5 место: ершов (50)
 
 Ведущий:  /stopbet
-Бот:      🔒 Ставки закрыты! ⚠️ Не сделали ставки: [тег Игрока2]
+Бот:      ⚠️ Не все сделали ставки: [тег Игрока2]
+          Введи /stopbet ещё раз чтобы всё равно закрыть приём ставок.
+
+Ведущий:  /stopbet
+Бот:      🔒 Приём ставок закрыт!
+          ⚠️ Без ставок: [тег Игрока2]
 
 Ведущий:  /result хилькевич, олимпийцы, башаров, ершов, стогниенко
 Бот:      ✅ Результаты Серия 6:
@@ -58,15 +64,35 @@ python bot.py
             🏆 Общий счёт: ...
 ```
 
-### Испытание на вылет (1 слот)
+Если все поставили, `/stopbet` сразу закрывает без предупреждения.
+
+Если название не указано (`/newbet 1 место, 2–3 место`), бот автоматически присваивает имя по формату «1 серия, испытание 1».
+
+### Испытание (1 слот)
 
 ```
 Ведущий:  /newbet Испытание: выживший
-Игрок1:   /bet хилькевич 300
-Ведущий:  /result хилькевич, стогниенко
+Игрок1:   /bet хилькевич 100
+Ведущий:  /result хилькевич
 ```
 
-При одном слоте лимит 200 снимается — можно ставить все 300 на одного.
+При одном слоте ставка — **100 очков**, лимит 200 на одну ставку не действует.
+
+Если нужно выбрать из двух вариантов:
+```
+Ведущий:  /newbet Испытание: хилькевич или стогниенко
+Бот:      Варианты:
+            /bet хилькевич 100
+            /bet стогниенко 100
+```
+
+### Групповой результат (испытания с группами)
+
+```
+Ведущий:  /result победитель; прошли1, прошли2; не прошли1, не прошли2
+```
+
+Группы разделяются `;`, участники внутри группы — `,`. Слоты сопоставляются с группами по порядку.
 
 ## Команды
 
@@ -75,15 +101,15 @@ python bot.py
 | Команда | Описание |
 |---------|----------|
 | `/newbet слоты` | Открыть новый раунд |
-| `/stopbet` | Закрыть приём ставок (тегает не поставивших) |
+| `/stopbet` | Закрыть приём ставок (двойное подтверждение если не все поставили) |
 | `/result порядок` | Ввести результаты и начислить очки |
-| `/cancel` | Отменить текущий раунд |
+| `/cancel` | Сбросить ставки текущего раунда |
 
 ### 🎯 Игроки
 
 | Команда | Описание |
 |---------|----------|
-| `/bet ставки` | Сделать ставку (ровно 300 очков) |
+| `/bet ставки` | Сделать ставку (300 очков при нескольких слотах, 100 при одном) |
 | `/mybets` | Мои ставки в текущем раунде |
 | `/myresult` | Мои итоги по всем раундам |
 
@@ -94,12 +120,13 @@ python bot.py
 | `/scores` | Общая таблица очков |
 | `/status` | Статус текущего раунда |
 | `/history` | История раундов |
+| `/chatid` | Узнать ID чата |
 | `/help` | Список команд |
 
 ## Правила ставок
 
-- Сумма ставок = **ровно 300 очков**
-- Не более **200 очков** на одну ставку (при испытании — 1 слот — до 300)
+- Несколько слотов: сумма ставок = **ровно 300 очков**, не более **200 очков** на одну ставку
+- Один слот: сумма ставок = **ровно 100 очков**, ограничений на одну ставку нет
 - Нельзя ставить на одну пару в нескольких слотах
 - Количество ставок = количеству слотов из `/newbet`
 
@@ -128,7 +155,7 @@ mybets - Мои ставки
 myresult - Мои итоги по раундам
 scores - Таблица очков
 status - Статус раунда
-cancel - Отменить раунд
+cancel - Сбросить ставки раунда
 history - История раундов
 help - Список команд
 ```
@@ -138,7 +165,7 @@ help - Список команд
 <a name="english"></a>
 # Bet on Love — Telegram Bot
 
-A group chat bot for 4 players. Friends bet on participants of a reality show.
+A group chat bot. Friends bet on participants of a reality show.
 
 ## Quick Start
 
@@ -165,11 +192,12 @@ python bot.py
 
 ## Round Flow
 
-### Regular round
+### Regular round (multiple slots)
 
 ```
 Host:    /newbet Series 6: 1st place, 2nd–3rd place, 4th–5th place
 Bot:     ✅ Series 6 open! Bets on: 1st place, 2nd–3rd place, 4th–5th place
+         You need to bet exactly 300 points.
 
 Alice:   /bet participant1 100, participant2 150, participant3 50
 Bot:     ✅ Alice, bet accepted!
@@ -178,7 +206,12 @@ Bot:     ✅ Alice, bet accepted!
            4th–5th place: participant3 (50)
 
 Host:    /stopbet
-Bot:     🔒 Bets closed! ⚠️ Missing bets: [Bob tagged]
+Bot:     ⚠️ Not everyone has bet: [Bob tagged]
+         Run /stopbet again to close betting anyway.
+
+Host:    /stopbet
+Bot:     🔒 Betting closed!
+         ⚠️ Missing bets: [Bob tagged]
 
 Host:    /result participant1, participant2, participant4, participant3, participant5
 Bot:     ✅ Results Series 6:
@@ -191,15 +224,35 @@ Bot:     ✅ Results Series 6:
            🏆 Leaderboard: ...
 ```
 
+If everyone has bet, `/stopbet` closes immediately without a warning.
+
+If no title is given (`/newbet 1st place, 2nd–3rd place`), the bot auto-names the round as "Series 1, challenge 1".
+
 ### Elimination challenge (1 slot)
 
 ```
 Host:    /newbet Challenge: survivor
-Alice:   /bet participant1 300
-Host:    /result participant1, participant2
+Alice:   /bet participant1 100
+Host:    /result participant1
 ```
 
-With a single slot the 200-point cap is lifted — all 300 can go on one pick.
+With a single slot the total bet is **100 points** and the per-bet 200-point cap does not apply.
+
+If players choose between two options:
+```
+Host:    /newbet Challenge: Alice or Bob
+Bot:     Options:
+           /bet Alice 100
+           /bet Bob 100
+```
+
+### Group result (challenges with groups)
+
+```
+Host:    /result winner; passed1, passed2; eliminated1, eliminated2
+```
+
+Groups are separated by `;`, members within a group by `,`. Slots are matched to groups in order.
 
 ## Commands
 
@@ -208,15 +261,15 @@ With a single slot the 200-point cap is lifted — all 300 can go on one pick.
 | Command | Description |
 |---------|-------------|
 | `/newbet slots` | Open a new round |
-| `/stopbet` | Lock bets (tags players who haven't bet) |
+| `/stopbet` | Lock bets (double confirmation if not everyone has bet) |
 | `/result order` | Enter results and award points |
-| `/cancel` | Cancel the current round |
+| `/cancel` | Reset bets for the current round |
 
 ### 🎯 Players
 
 | Command | Description |
 |---------|-------------|
-| `/bet bets` | Place a bet (exactly 300 points) |
+| `/bet bets` | Place a bet (300 points for multiple slots, 100 for one) |
 | `/mybets` | My bets in the current round |
 | `/myresult` | My history across all rounds |
 
@@ -227,12 +280,13 @@ With a single slot the 200-point cap is lifted — all 300 can go on one pick.
 | `/scores` | Overall leaderboard |
 | `/status` | Current round status |
 | `/history` | Round history |
+| `/chatid` | Get the chat ID |
 | `/help` | Command list |
 
 ## Betting Rules
 
-- Total bet = **exactly 300 points**
-- Max **200 points** per single bet (exception: elimination round with 1 slot allows up to 300)
+- Multiple slots: total = **exactly 300 points**, max **200 points** per single bet
+- Single slot: total = **exactly 100 points**, no per-bet cap
 - Can't bet on the same participant in multiple slots
 - Number of bets must equal the number of slots in `/newbet`
 
@@ -261,7 +315,7 @@ mybets - My bets
 myresult - My round history
 scores - Leaderboard
 status - Round status
-cancel - Cancel round
+cancel - Reset round bets
 history - Round history
 help - Command list
 ```
