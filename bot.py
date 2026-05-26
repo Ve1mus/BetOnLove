@@ -34,6 +34,16 @@ PLAYER_IDS_BY_NAME = {v: k for k, v in PLAYER_IDS.items()}
 _chat_id_raw = os.getenv("CHAT_ID", "").strip()
 ALLOWED_CHAT_ID = int(_chat_id_raw) if _chat_id_raw else None
 
+ADMIN_IDS = {
+    int(x.strip())
+    for x in os.getenv("ADMIN_IDS", "").split(",")
+    if x.strip().isdigit()
+}
+
+
+def is_admin(user_id: int) -> bool:
+    return not ADMIN_IDS or user_id in ADMIN_IDS
+
 
 class ChatFilterMiddleware(BaseMiddleware):
     async def __call__(
@@ -138,6 +148,8 @@ def get_current_episode(data):
 
 @dp.message(Command("chatid"))
 async def cmd_chatid(message: Message):
+    if not is_admin(message.from_user.id):
+        return
     await message.answer(f"Chat ID: <code>{message.chat.id}</code>", parse_mode="HTML")
 
 
@@ -179,6 +191,10 @@ async def cmd_help(message: Message):
 
 @dp.message(Command("newbet"))
 async def cmd_newbet(message: Message, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Только ведущий может открывать раунды.")
+        return
+
     data = load_data()
 
     ep = get_current_episode(data)
@@ -341,6 +357,10 @@ async def cmd_bet(message: Message, command: CommandObject):
 
 @dp.message(Command("stopbet"))
 async def cmd_stopbet(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Только ведущий может закрывать приём ставок.")
+        return
+
     data = load_data()
     ep = get_current_episode(data)
 
@@ -390,6 +410,10 @@ async def cmd_stopbet(message: Message):
 
 @dp.message(Command("result"))
 async def cmd_result(message: Message, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Только ведущий может вводить результаты.")
+        return
+
     data = load_data()
     ep = get_current_episode(data)
 
@@ -563,6 +587,10 @@ async def cmd_scores(message: Message):
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("❌ Только ведущий может отменять раунды.")
+        return
+
     data = load_data()
     ep = get_current_episode(data)
 

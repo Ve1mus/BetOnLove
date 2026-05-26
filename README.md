@@ -21,6 +21,7 @@ pip install -r requirements.txt
 BOT_TOKEN=токен_от_BotFather
 PLAYERS=111111111:Игрок1,222222222:Игрок2,333333333:Игрок3,444444444:Игрок4
 CHAT_ID=        # узнать через /chatid прямо в чате
+ADMIN_IDS=      # Telegram ID ведущих через запятую; если пусто — все могут управлять ботом
 ```
 
 Telegram ID каждого игрока — через [@userinfobot](https://t.me/userinfobot).
@@ -183,6 +184,7 @@ pip install -r requirements.txt
 BOT_TOKEN=your_token_from_BotFather
 PLAYERS=111111111:Alice,222222222:Bob,333333333:Carol,444444444:Dave
 CHAT_ID=        # find it by running /chatid in your group chat
+ADMIN_IDS=      # Telegram IDs of hosts (comma-separated); leave empty to allow anyone
 ```
 
 Get each player's Telegram ID via [@userinfobot](https://t.me/userinfobot).
