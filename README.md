@@ -7,6 +7,8 @@
 
 Бот для группового чата. Друзья делают ставки на участников реалити-шоу.
 
+[Политика конфиденциальности](PRIVACY.md)
+
 ## Быстрый старт
 
 **1. Установи зависимости:**
@@ -109,17 +111,18 @@ python bot.py
 
 | Команда | Описание |
 |---------|----------|
-| `/bet ставки` | Сделать ставку (300 очков при нескольких слотах, 100 при одном) |
+| `/bet ставки` | Сделать ставку (300 очков при нескольких слотах, 100 при одном) — сообщение удаляется после принятия |
 | `/mybets` | Мои ставки в текущем раунде |
 | `/myresult` | Мои итоги по всем раундам |
+| `/stats` | Моя персональная статистика (процент угаданных, среднее за раунд, лучший раунд) |
 
 ### 📊 Просмотр
 
 | Команда | Описание |
 |---------|----------|
-| `/scores` | Общая таблица очков |
+| `/scores` | Общая таблица очков с отрывом от лидера |
 | `/status` | Статус текущего раунда |
-| `/history` | История раундов |
+| `/history` | История раундов; `/history N` — детали раунда #N |
 | `/chatid` | Узнать ID чата |
 | `/help` | Список команд |
 
@@ -153,6 +156,7 @@ stopbet - Закрыть приём ставок
 result - Ввести результаты
 mybets - Мои ставки
 myresult - Мои итоги по раундам
+stats - Моя статистика
 scores - Таблица очков
 status - Статус раунда
 cancel - Сбросить ставки раунда
@@ -269,17 +273,18 @@ Groups are separated by `;`, members within a group by `,`. Slots are matched to
 
 | Command | Description |
 |---------|-------------|
-| `/bet bets` | Place a bet (300 points for multiple slots, 100 for one) |
+| `/bet bets` | Place a bet (300 points for multiple slots, 100 for one) — message is deleted after acceptance |
 | `/mybets` | My bets in the current round |
 | `/myresult` | My history across all rounds |
+| `/stats` | My personal stats (win rate, average per round, best round) |
 
 ### 📊 Info
 
 | Command | Description |
 |---------|-------------|
-| `/scores` | Overall leaderboard |
+| `/scores` | Overall leaderboard with gap from leader |
 | `/status` | Current round status |
-| `/history` | Round history |
+| `/history` | Round history; `/history N` — details of round #N |
 | `/chatid` | Get the chat ID |
 | `/help` | Command list |
 
@@ -313,6 +318,7 @@ stopbet - Lock bets
 result - Enter results
 mybets - My bets
 myresult - My round history
+stats - My stats
 scores - Leaderboard
 status - Round status
 cancel - Reset round bets
