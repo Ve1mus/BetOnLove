@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, BaseMiddleware
 from aiogram.types import Message
 from aiogram.filters import CommandStart, Command
+from aiogram.filters.command import CommandObject
 import asyncio
 
 load_dotenv()
@@ -50,19 +51,26 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 dp.message.middleware(ChatFilterMiddleware())
 
-DATA_FILE = "data.json"
+DATA_FILE = os.path.join(os.path.dirname(__file__), "data.json")
 
 
 def load_data():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
+        try:
+            with open(DATA_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"⚠️ Не удалось загрузить {DATA_FILE}: {e}. Начинаем с чистого состояния.")
     return {"episodes": [], "scores": {p: 0 for p in PLAYERS}}
 
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
+    tmp = DATA_FILE + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    if os.path.exists(DATA_FILE):
+        os.replace(DATA_FILE, DATA_FILE + ".bak")
+    os.replace(tmp, DATA_FILE)
 
 
 def find_player(user_id):
@@ -158,17 +166,19 @@ async def cmd_help(message: Message):
         "  <code>/bet хилькевич 100, олимпийцы 150, ершов 50</code>\n"
         "  При одном слоте: <code>/bet хилькевич 100</code>\n\n"
         "/mybets — мои ставки в текущем раунде\n"
-        "/myresult — мои итоги по всем раундам\n\n"
+        "/myresult — мои итоги по всем раундам\n"
+        "/stats — моя персональная статистика\n\n"
         "<b>📊 Просмотр</b>\n"
-        "/scores — таблица очков\n"
+        "/scores — таблица очков с отрывом от лидера\n"
         "/status — статус текущего раунда\n"
-        "/history — история раундов"
+        "/history — история раундов\n"
+        "/history 4 — детали раунда #4"
     )
     await message.answer(help_text, parse_mode="HTML")
 
 
 @dp.message(Command("newbet"))
-async def cmd_newbet(message: Message):
+async def cmd_newbet(message: Message, command: CommandObject):
     data = load_data()
 
     ep = get_current_episode(data)
@@ -176,7 +186,7 @@ async def cmd_newbet(message: Message):
         await message.answer("❌ Есть незакрытый раунд! Сначала /result или /cancel.")
         return
 
-    text = message.text.replace("/newbet", "").strip()
+    text = command.args or ""
     if not text:
         await message.answer(
             "Формат: /newbet 1 место, 2 место, 5 место\n"
@@ -233,7 +243,7 @@ async def cmd_newbet(message: Message):
 
 
 @dp.message(Command("bet"))
-async def cmd_bet(message: Message):
+async def cmd_bet(message: Message, command: CommandObject):
     data = load_data()
     ep = get_current_episode(data)
 
@@ -254,7 +264,7 @@ async def cmd_bet(message: Message):
         await message.answer("❌ Ты не в списке игроков!")
         return
 
-    bets_text = message.text.replace("/bet", "").strip()
+    bets_text = command.args or ""
     if not bets_text:
         await message.answer("Формат: /bet пара1 сумма1, пара2 сумма2, ...")
         return
@@ -321,8 +331,12 @@ async def cmd_bet(message: Message):
     ep["bets"][player] = new_bets
     save_data(data)
 
-    bets_display = "\n".join([f"  {b['slot']}: {b['pair']} ({b['amount']})" for b in new_bets])
-    await message.answer(f"✅ {player}, ставка принята!\n{bets_display}")
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+    await message.answer(f"✅ {player} сделал(а) ставку!")
 
 
 @dp.message(Command("stopbet"))
@@ -375,7 +389,7 @@ async def cmd_stopbet(message: Message):
 
 
 @dp.message(Command("result"))
-async def cmd_result(message: Message):
+async def cmd_result(message: Message, command: CommandObject):
     data = load_data()
     ep = get_current_episode(data)
 
@@ -387,7 +401,11 @@ async def cmd_result(message: Message):
         await message.answer("❌ Раунд уже закрыт!")
         return
 
-    result_text = message.text.replace("/result", "").strip()
+    if not ep.get("bets_locked"):
+        ep["bets_locked"] = True
+        save_data(data)
+
+    result_text = command.args or ""
     if not result_text:
         await message.answer(
             "Обычный формат: /result 1й, 2й, 3й, 4й, 5й\n"
@@ -444,7 +462,7 @@ async def cmd_myresult(message: Message):
         await message.answer("❌ Ты не в списке игроков!")
         return
 
-    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results")]
+    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results") and not ep.get("cancelled")]
     if not closed:
         await message.answer("❌ Нет завершённых раундов!")
         return
@@ -532,11 +550,15 @@ async def cmd_status(message: Message):
 async def cmd_scores(message: Message):
     data = load_data()
 
-    scores = [(p, data["scores"][p]) for p in PLAYERS]
-    scores.sort(key=lambda x: x[1], reverse=True)
+    scores = sorted([(p, data["scores"][p]) for p in PLAYERS], key=lambda x: x[1], reverse=True)
+    leader = scores[0][1]
 
-    scores_text = "\n".join([f"  {i+1}. {p}: {s}" for i, (p, s) in enumerate(scores)])
-    await message.answer(f"🏆 Общий счёт:\n{scores_text}")
+    lines = []
+    for i, (p, s) in enumerate(scores):
+        gap = f"  (-{leader - s})" if i > 0 else ""
+        lines.append(f"  {i+1}. {p}: {s}{gap}")
+
+    await message.answer("🏆 Общий счёт:\n" + "\n".join(lines))
 
 
 @dp.message(Command("cancel"))
@@ -555,6 +577,8 @@ async def cmd_cancel(message: Message):
     ep["bets"] = {p: [] for p in PLAYERS}
     ep["bets_locked"] = False
     ep["results"] = []
+    ep["closed"] = True
+    ep["cancelled"] = True
     ep.pop("stopbet_warned", None)
     save_data(data)
 
@@ -562,20 +586,115 @@ async def cmd_cancel(message: Message):
 
 
 @dp.message(Command("history"))
-async def cmd_history(message: Message):
+async def cmd_history(message: Message, command: CommandObject):
     data = load_data()
 
     if not data["episodes"]:
         await message.answer("❌ История пуста!")
         return
 
+    # /history 4 — детали конкретного раунда
+    if command.args:
+        try:
+            ep_id = int(command.args.strip())
+        except ValueError:
+            await message.answer("Формат: /history или /history 4")
+            return
+
+        ep = next((e for e in data["episodes"] if e["id"] == ep_id), None)
+        if not ep:
+            await message.answer(f"❌ Раунд #{ep_id} не найден!")
+            return
+
+        lines = [f"📜 {ep['name']} (#{ep['id']})\nСлоты: {', '.join(ep.get('slots', []))}"]
+
+        if ep.get("results"):
+            lines.append(f"\nРезультаты:\n{format_results(ep['results'], ep.get('slots'))}")
+
+        lines.append("\nСтавки:")
+        for p in PLAYERS:
+            player_bets = ep["bets"].get(p, [])
+            if not player_bets:
+                lines.append(f"  {p}: —")
+                continue
+            if ep["closed"] and ep.get("results") and not ep.get("cancelled"):
+                ep_score, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
+                won_slots = {w.split("(")[1].split(")")[0].strip() for w in wins}
+                bet_strs = []
+                for b in player_bets:
+                    mark = "✅" if b["slot"] in won_slots else "❌"
+                    bet_strs.append(f"{mark} {b['slot']}: {b['pair']} ({b['amount']})")
+                lines.append(f"  {p} [+{ep_score}]:\n    " + "\n    ".join(bet_strs))
+            else:
+                bet_strs = [f"{b['slot']}: {b['pair']} ({b['amount']})" for b in player_bets]
+                lines.append(f"  {p}:\n    " + "\n    ".join(bet_strs))
+
+        await message.answer("\n".join(lines))
+        return
+
+    # /history — список всех раундов
     history_lines = []
     for ep in data["episodes"]:
-        status = "✅" if ep["closed"] else "🔄"
-        history_lines.append(f"{status} {ep['name']} (ID: {ep['id']})")
+        if ep.get("cancelled"):
+            status = "🚫"
+        elif ep["closed"]:
+            status = "✅"
+        else:
+            status = "🔄"
+        history_lines.append(f"{status} #{ep['id']} {ep['name']}")
 
-    history_text = "\n".join(history_lines)
-    await message.answer(f"📜 История раундов:\n{history_text}")
+    await message.answer("📜 История раундов:\n" + "\n".join(history_lines))
+
+
+@dp.message(Command("stats"))
+async def cmd_stats(message: Message):
+    data = load_data()
+
+    player = find_player(message.from_user.id)
+    if not player:
+        await message.answer("❌ Ты не в списке игроков!")
+        return
+
+    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results") and not ep.get("cancelled")]
+    if not closed:
+        await message.answer("❌ Нет завершённых раундов!")
+        return
+
+    rounds_played = 0
+    total_bets = 0
+    won_bets = 0
+    best_score = 0
+    best_round = None
+
+    for ep in closed:
+        player_bets = ep["bets"].get(player, [])
+        if not player_bets:
+            continue
+        rounds_played += 1
+        total_bets += len(player_bets)
+        ep_score, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
+        won_bets += len(wins)
+        if ep_score > best_score:
+            best_score = ep_score
+            best_round = ep["name"]
+
+    if rounds_played == 0:
+        await message.answer(f"{player}: ни одной ставки в завершённых раундах.")
+        return
+
+    total_score = data["scores"].get(player, 0)
+    win_rate = won_bets / total_bets * 100 if total_bets else 0
+    avg_score = total_score / rounds_played
+
+    lines = [
+        f"📊 Статистика {player}:",
+        f"  Раундов сыграно: {rounds_played} из {len(closed)}",
+        f"  Угадано ставок: {won_bets} / {total_bets} ({win_rate:.0f}%)",
+        f"  Среднее за раунд: {avg_score:.0f} очков",
+        f"  Лучший раунд: {best_round} (+{best_score})",
+        f"  Всего очков: {total_score}",
+    ]
+    await message.answer("\n".join(lines))
 
 
 async def main():
