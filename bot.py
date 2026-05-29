@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart, Command
 from aiogram.filters.command import CommandObject
 import asyncio
 
-load_dotenv()
+load_dotenv(override=True)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
@@ -376,7 +376,7 @@ async def cmd_stopbet(message: Message):
         await message.answer("⚠️ Ставки уже заморожены!")
         return
 
-    not_bet = [p for p in PLAYERS if not ep["bets"][p]]
+    not_bet = [p for p in PLAYERS if not ep["bets"].get(p)]
 
     if not_bet and not ep.get("stopbet_warned"):
         ep["stopbet_warned"] = True
@@ -447,10 +447,10 @@ async def cmd_result(message: Message, command: CommandObject):
     win_details = {p: [] for p in PLAYERS}
 
     for player in PLAYERS:
-        score, wins = score_bets(ep["bets"][player], results, ep["slots"])
+        score, wins = score_bets(ep["bets"].get(player, []), results, ep["slots"])
         round_scores[player] = score
         win_details[player] = wins
-        data["scores"][player] += score
+        data["scores"][player] = data["scores"].get(player, 0) + score
 
     ep["results"] = results
     ep["closed"] = True
@@ -529,7 +529,7 @@ async def cmd_mybets(message: Message):
         await message.answer("❌ Ты не в списке игроков!")
         return
 
-    bets = ep["bets"][player]
+    bets = ep["bets"].get(player, [])
     if not bets:
         await message.answer(f"{player}, ты ещё не делал ставок в этом раунде.")
         return
@@ -558,7 +558,7 @@ async def cmd_status(message: Message):
     slots_display = ", ".join(ep.get("slots", []))
 
     bets_text = "\n".join([
-        f"  {p}: {'✅' if ep['bets'][p] else '⏳'}"
+        f"  {p}: {'✅' if ep['bets'].get(p) else '⏳'}"
         for p in PLAYERS
     ])
 
@@ -574,7 +574,7 @@ async def cmd_status(message: Message):
 async def cmd_scores(message: Message):
     data = load_data()
 
-    scores = sorted([(p, data["scores"][p]) for p in PLAYERS], key=lambda x: x[1], reverse=True)
+    scores = sorted([(p, data["scores"].get(p, 0)) for p in PLAYERS], key=lambda x: x[1], reverse=True)
     leader = scores[0][1]
 
     lines = []
