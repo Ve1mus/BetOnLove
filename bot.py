@@ -135,8 +135,8 @@ def score_bets(player_bets, results, slots):
 def format_results(results, slots=None):
     if is_grouped(results):
         if slots and len(slots) == len(results):
-            return "\n".join([f"  {slots[i]}: {', '.join(g)}" for i, g in enumerate(results)])
-        return "\n".join([f"  Группа {i+1}: {', '.join(g)}" for i, g in enumerate(results)])
+            return "\n".join([f"  {slots[i]}: {', '.join(g) if g else '—'}" for i, g in enumerate(results)])
+        return "\n".join([f"  Группа {i+1}: {', '.join(g) if g else '—'}" for i, g in enumerate(results)])
     return "\n".join([f"  {i+1}. {r}" for i, r in enumerate(results)])
 
 
@@ -171,7 +171,9 @@ async def cmd_help(message: Message):
         "  <code>/newbet Испытание: выживший</code>  ← 1 слот = испытание\n\n"
         "/stopbet — закрыть приём ставок\n\n"
         "/result — ввести результаты\n"
-        "  <code>/result хилькевич, ершов, башаров, олимпиец, стогниенко</code>\n\n"
+        "  <code>/result хилькевич, ершов, башаров, олимпиец, стогниенко</code>\n"
+        "  Групповой: <code>/result победитель; прошли1, прошли2; не прошли</code>\n"
+        "  Пустой слот (никто не попал): <code>/result ; ; арно, иракли</code>\n\n"
         "/cancel — отменить текущий раунд\n\n"
         "<b>🎯 Игроки</b>\n"
         "/bet — сделать ставку (300 очков при нескольких слотах, 100 при одном)\n"
@@ -433,13 +435,14 @@ async def cmd_result(message: Message, command: CommandObject):
     if not result_text:
         await message.answer(
             "Обычный формат: /result 1й, 2й, 3й, 4й, 5й\n"
-            "Групповой (испытания): /result победитель; прошли1, прошли2; не прошли1, не прошли2"
+            "Групповой (испытания): /result победитель; прошли1, прошли2; не прошли1, не прошли2\n"
+            "Пустой слот (никто): /result ; ; победители  ← пустые ; для слотов без победителей"
         )
         return
 
     if ";" in result_text:
         groups = [g.strip() for g in result_text.split(";")]
-        results = [[m.strip() for m in g.split(",") if m.strip()] for g in groups if g.strip()]
+        results = [[m.strip() for m in g.split(",") if m.strip()] for g in groups]
     else:
         results = [r.strip() for r in result_text.split(",")]
 
@@ -486,7 +489,7 @@ async def cmd_myresult(message: Message):
         await message.answer("❌ Ты не в списке игроков!")
         return
 
-    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results") and not ep.get("cancelled")]
+    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results")]
     if not closed:
         await message.answer("❌ Нет завершённых раундов!")
         return
@@ -602,15 +605,10 @@ async def cmd_cancel(message: Message):
         await message.answer("❌ Раунд уже закрыт!")
         return
 
-    ep["bets"] = {p: [] for p in PLAYERS}
-    ep["bets_locked"] = False
-    ep["results"] = []
-    ep["closed"] = True
-    ep["cancelled"] = True
-    ep.pop("stopbet_warned", None)
+    data["episodes"].remove(ep)
     save_data(data)
 
-    await message.answer("✅ Раунд отменён. Все ставки очищены.")
+    await message.answer("✅ Раунд отменён и удалён.")
 
 
 @dp.message(Command("history"))
@@ -645,7 +643,7 @@ async def cmd_history(message: Message, command: CommandObject):
             if not player_bets:
                 lines.append(f"  {p}: —")
                 continue
-            if ep["closed"] and ep.get("results") and not ep.get("cancelled"):
+            if ep["closed"] and ep.get("results"):
                 ep_score, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
                 won_slots = {w.split("(")[1].split(")")[0].strip() for w in wins}
                 bet_strs = []
@@ -663,9 +661,7 @@ async def cmd_history(message: Message, command: CommandObject):
     # /history — список всех раундов
     history_lines = []
     for ep in data["episodes"]:
-        if ep.get("cancelled"):
-            status = "🚫"
-        elif ep["closed"]:
+        if ep["closed"]:
             status = "✅"
         else:
             status = "🔄"
@@ -683,7 +679,7 @@ async def cmd_stats(message: Message):
         await message.answer("❌ Ты не в списке игроков!")
         return
 
-    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results") and not ep.get("cancelled")]
+    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results")]
     if not closed:
         await message.answer("❌ Нет завершённых раундов!")
         return
