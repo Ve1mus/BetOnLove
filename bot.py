@@ -4,7 +4,7 @@ import re
 from typing import Any, Awaitable, Callable
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, BaseMiddleware
-from aiogram.types import Message
+from aiogram.types import BotCommand, Message
 from aiogram.filters import CommandStart, Command
 from aiogram.filters.command import CommandObject
 import asyncio
@@ -107,7 +107,7 @@ def is_grouped(results):
 
 
 def score_bets(player_bets, results, slots):
-    """Возвращает (total_score, [win_descriptions])."""
+    """Return total points and structured winning bets."""
     total = 0
     wins = []
     if is_grouped(results):
@@ -118,7 +118,7 @@ def score_bets(player_bets, results, slots):
             group = results[slot_idx]
             if any(fuzzy_match(bet["pair"], member) for member in group):
                 total += bet["amount"]
-                wins.append(f"{', '.join(group)} ({bet['slot']}) +{bet['amount']}")
+                wins.append(bet)
     else:
         for bet in player_bets:
             slot_idx = slots.index(bet["slot"]) if bet["slot"] in slots else None
@@ -127,9 +127,13 @@ def score_bets(player_bets, results, slots):
                 if 1 <= pos <= len(results):
                     if fuzzy_match(bet["pair"], results[pos - 1]):
                         total += bet["amount"]
-                        wins.append(f"{results[pos-1]} ({bet['slot']}) +{bet['amount']}")
+                        wins.append(bet)
                         break
     return total, wins
+
+
+def format_win(bet):
+    return f"{bet['pair']} — {bet['slot']}, +{bet['amount']}"
 
 
 def format_results(results, slots=None):
@@ -144,6 +148,79 @@ def get_current_episode(data):
     if data["episodes"]:
         return data["episodes"][-1]
     return None
+
+
+BET_LABELS = {"round": "Раунд", "elim": "Вылет", "final": "Финал"}
+
+
+def active_bets(data):
+    """Inspect existing state without creating empty betting blocks."""
+    active = []
+    ep = get_current_episode(data)
+    if ep and not ep["closed"]:
+        active.append(("round", ep))
+    for kind in ("elim", "final"):
+        block = data.get(kind)
+        if block and block.get("bets") and not block.get("resolved"):
+            active.append((kind, block))
+    return active
+
+
+def format_scores(data):
+    scores = sorted(data["scores"].items(), key=lambda item: item[1], reverse=True)
+    if not scores:
+        return "🏆 Очков пока нет."
+    leader = scores[0][1]
+    return "🏆 Общий счёт:\n" + "\n".join(
+        f"  {i}. {player}: {score}" + (f"  (-{leader - score})" if i > 1 else "")
+        for i, (player, score) in enumerate(scores, 1)
+    )
+
+
+async def answer_long(message, text):
+    """Keep growing season histories within Telegram's message limit."""
+    while len(text) > 3500:
+        cut = text.rfind("\n", 0, 3500)
+        if cut <= 0:
+            cut = 3500
+        await message.answer(text[:cut])
+        text = text[cut:].lstrip("\n")
+    if text:
+        await message.answer(text)
+
+
+FINAL_BET_AMOUNT = 500
+
+
+def get_final(data):
+    """Возвращает блок финальной ставки, создавая его при первом обращении."""
+    final = data.get("final")
+    if final is None:
+        final = {
+            "amount": FINAL_BET_AMOUNT,
+            "bets": {},
+            "locked": False,
+            "winner": None,
+            "resolved": False,
+        }
+        data["final"] = final
+    return final
+
+
+ELIM_BET_AMOUNT = 300
+
+
+def get_elim(data):
+    """Create the current elimination block lazily; settlements live in history."""
+    elim = data.get("elim")
+    if elim is None:
+        elim = {
+            "amount": ELIM_BET_AMOUNT,
+            "bets": {},
+            "locked": False,
+        }
+        data["elim"] = elim
+    return elim
 
 
 @dp.message(Command("chatid"))
@@ -163,32 +240,47 @@ async def cmd_start(message: Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: Message):
-    help_text = (
-        "<b>🎬 Ведущий</b>\n"
-        "/newbet — открыть раунд\n"
-        "  <code>/newbet 1 место, 2–3 место, 4–5 место</code>\n"
-        "  <code>/newbet Серия 5: 1 место, 2–3 место</code>\n"
-        "  <code>/newbet Испытание: выживший</code>  ← 1 слот = испытание\n\n"
-        "/stopbet — закрыть приём ставок\n\n"
-        "/result — ввести результаты\n"
-        "  <code>/result хилькевич, ершов, башаров, олимпиец, стогниенко</code>\n"
-        "  Групповой: <code>/result победитель; прошли1, прошли2; не прошли</code>\n"
-        "  Пустой слот (никто не попал): <code>/result ; ; арно, иракли</code>\n\n"
-        "/cancel — отменить текущий раунд\n\n"
-        "<b>🎯 Игроки</b>\n"
-        "/bet — сделать ставку (300 очков при нескольких слотах, 100 при одном)\n"
-        "  <code>/bet хилькевич 100, олимпийцы 150, ершов 50</code>\n"
-        "  При одном слоте: <code>/bet хилькевич 100</code>\n\n"
-        "/mybets — мои ставки в текущем раунде\n"
-        "/myresult — мои итоги по всем раундам\n"
-        "/stats — моя персональная статистика\n\n"
-        "<b>📊 Просмотр</b>\n"
-        "/scores — таблица очков с отрывом от лидера\n"
-        "/status — статус текущего раунда\n"
-        "/history — история раундов\n"
-        "/history 4 — детали раунда #4"
+    await message.answer(
+        "🎲 <b>Ставка на любовь</b>\n\n"
+        "Играем по очереди: открываем ставку → ставим → закрываем приём → вводим результат. "
+        "Пока ставка не рассчитана или не отменена, новую открыть нельзя.\n\n"
+        "<b>🎬 Обычный раунд</b>\n"
+        "Открыть: <code>/newbet 1 место, 2–3 место, 4–5 место</code>\n"
+        "Поставить: <code>/bet хилькевич 100, олимпийцы 150, ершов 50</code>\n"
+        "Порядок ставок совпадает с порядком мест. Несколько мест — ровно 300 очков, "
+        "не больше 200 на одно. Один участник не должен повторяться.\n"
+        "Одно место: <code>/newbet Испытание: победитель</code>\n"
+        "Ставка: <code>/bet хилькевич 100</code> — ровно 100 очков.\n\n"
+        "<b>🚪 Вылет и 🏁 финал</b>\n"
+        "<code>/elim башаров</code> — кто вылетит, 300 очков за верный прогноз.\n"
+        "<code>/final хилькевич</code> — кто победит в сезоне, 500 очков.\n"
+        "Первая ставка открывает приём, остальные ставят той же командой. "
+        "Без имени /elim и /final показывают только твой выбор. "
+        "Менять его можно до закрытия приёма.\n\n"
+        "<b>🔒 Закрытие и результат — для любой ставки</b>\n"
+        "/stopbet — закрыть приём. Если кто-то не поставил, бот предупредит; "
+        "повтор команды всё равно закроет приём.\n"
+        "/result — ввести результат и начислить очки:\n"
+        "• Раунд: <code>/result хилькевич, олимпийцы, башаров, ершов, стогниенко</code>\n"
+        "• Группы по местам: <code>/result победитель; прошли1, прошли2; выбыли</code>\n"
+        "• Пустая группа: <code>/result ; ; победители</code>\n"
+        "• Вылет: <code>/result башаров, арно</code>\n"
+        "• Финал: <code>/result хилькевич</code>\n"
+        "Тип бот определит сам. /result без текста только покажет подсказку.\n"
+        "/cancel — отменить текущую ставку; прошлые очки сохранятся.\n"
+        "Вести игру может любой из нас.\n\n"
+        "<b>📊 Мои ставки и общий счёт</b>\n"
+        "/me — моя текущая или последняя ставка, очки и статистика\n"
+        "/mehistory — мои итоги по раундам, вылетам и финалу\n"
+        "/scores — таблица очков\n"
+        "/status — текущая ставка и кто уже поставил\n"
+        "/history — история раундов и вылетов\n"
+        "<code>/history 4</code> — детали раунда №4\n"
+        "<code>/history e1</code> — детали вылета №1\n\n"
+        "Чужие прогнозы скрыты до закрытия приёма. "
+        "Ответы на личные команды в группе видны всем.",
+        parse_mode="HTML",
     )
-    await message.answer(help_text, parse_mode="HTML")
 
 
 @dp.message(Command("newbet"))
@@ -199,9 +291,8 @@ async def cmd_newbet(message: Message, command: CommandObject):
 
     data = load_data()
 
-    ep = get_current_episode(data)
-    if ep and not ep["closed"]:
-        await message.answer("❌ Есть незакрытый раунд! Сначала /result или /cancel.")
+    if active_bets(data):
+        await message.answer("❌ Уже есть активная ставка. Сначала /result или /cancel.")
         return
 
     text = command.args or ""
@@ -241,6 +332,7 @@ async def cmd_newbet(message: Message, command: CommandObject):
     }
 
     data["episodes"].append(episode)
+    data["last_bet_type"] = "round"
     save_data(data)
 
     slots_display = ", ".join(slots)
@@ -287,7 +379,7 @@ async def cmd_bet(message: Message, command: CommandObject):
         await message.answer("Формат: /bet пара1 сумма1, пара2 сумма2, ...")
         return
 
-    # Принимаем запятую, | и перенос строки как разделитель
+    # Accept commas, pipes and newlines between picks.
     normalized = re.sub(r'[|\n]+', ',', bets_text)
     bet_entries = [b.strip() for b in normalized.split(",") if b.strip()]
     slots = ep["slots"]
@@ -362,52 +454,80 @@ async def cmd_stopbet(message: Message):
     if not is_admin(message.from_user.id):
         await message.answer("❌ Только ведущий может закрывать приём ставок.")
         return
-
     data = load_data()
-    ep = get_current_episode(data)
-
-    if not ep:
-        await message.answer("❌ Нет активного раунда!")
+    active = active_bets(data)
+    if len(active) != 1:
+        await message.answer("❌ Нет единственной активной ставки. Проверь /status.")
         return
-
-    if ep["closed"]:
-        await message.answer("❌ Раунд уже закрыт!")
+    kind, block = active[0]
+    lock_key = "bets_locked" if kind == "round" else "locked"
+    if block.get(lock_key):
+        await message.answer("⚠️ Приём ставок уже закрыт. Введи /result.")
         return
-
-    if ep.get("bets_locked"):
-        await message.answer("⚠️ Ставки уже заморожены!")
-        return
-
-    not_bet = [p for p in PLAYERS if not ep["bets"].get(p)]
-
-    if not_bet and not ep.get("stopbet_warned"):
-        ep["stopbet_warned"] = True
+    missing = [p for p in PLAYERS if not block["bets"].get(p)]
+    if missing and not block.get("stop_warned"):
+        block["stop_warned"] = True
         save_data(data)
-        tags = " ".join(
-            f'<a href="tg://user?id={PLAYER_IDS_BY_NAME[p]}">{p}</a>'
-            for p in not_bet
-        )
         await message.answer(
-            f"⚠️ Не все сделали ставки: {tags}\n\n"
-            f"Введи /stopbet ещё раз чтобы всё равно закрыть приём ставок.",
-            parse_mode="HTML"
+            f"⚠️ {BET_LABELS[kind]}: не все поставили: {', '.join(missing)}.\n"
+            "Введи /stopbet ещё раз, чтобы всё равно закрыть приём."
         )
         return
-
-    ep["bets_locked"] = True
+    block[lock_key] = True
     save_data(data)
+    await message.answer(f"🔒 {BET_LABELS[kind]}: приём ставок закрыт!\nРезультат: /result ...")
 
-    if not_bet:
-        tags = " ".join(
-            f'<a href="tg://user?id={PLAYER_IDS_BY_NAME[p]}">{p}</a>'
-            for p in not_bet
-        )
-        await message.answer(
-            f"🔒 Приём ставок закрыт!\n\n⚠️ Без ставок: {tags}",
-            parse_mode="HTML"
-        )
+
+def settle_round(data, ep, result_text):
+    if ";" in result_text:
+        results = [[m.strip() for m in group.split(",") if m.strip()]
+                   for group in result_text.split(";")]
+        if len(results) != len(ep["slots"]):
+            raise ValueError(f"Нужно {len(ep['slots'])} групп, разделённых ;")
     else:
-        await message.answer("🔒 Приём ставок закрыт! ✅ Все поставили.")
+        results = [r.strip() for r in result_text.split(",")]
+        if not all(results):
+            raise ValueError("Пустые имена недопустимы. Для пустой группы используй ;")
+    if not any(results):
+        raise ValueError("Укажи хотя бы один результат.")
+    round_scores = {}
+    lines = []
+    for player in PLAYERS:
+        score, wins = score_bets(ep["bets"].get(player, []), results, ep["slots"])
+        round_scores[player] = score
+        details = "; ".join(format_win(w) for w in wins) or "—"
+        lines.append(f"  {player}: +{score} ({details})")
+    for player, score in round_scores.items():
+        data["scores"][player] = data["scores"].get(player, 0) + score
+    ep.update(results=results, closed=True, bets_locked=True, round_scores=round_scores)
+    return (f"✅ Результаты {ep['name']}:\n{format_results(results, ep['slots'])}\n\n"
+            "Очки за раунд:\n" + "\n".join(lines))
+
+
+def settle_special(data, kind, block, result_text):
+    results = [name.strip() for name in result_text.split(",")]
+    if not all(results) or ";" in result_text or (kind == "final" and len(results) != 1):
+        raise ValueError("Для финала укажи одного победителя, для вылета — имена через запятую.")
+    amount = block["amount"]
+    round_scores = {}
+    lines = []
+    for player in PLAYERS:
+        pick = block["bets"].get(player)
+        score = amount if pick and any(fuzzy_match(pick, name) for name in results) else 0
+        round_scores[player] = score
+        mark = "✅" if score else "❌"
+        lines.append(f"  {mark} {player}: {pick or 'не ставил'} +{score}")
+    for player, score in round_scores.items():
+        data["scores"][player] = data["scores"].get(player, 0) + score
+    if kind == "final":
+        block.update(locked=True, winner=results[0], resolved=True, round_scores=round_scores)
+    else:
+        history = data.setdefault("elim_history", [])
+        history.append({"id": len(history) + 1, "amount": amount,
+                        "bets": dict(block["bets"]), "results": results,
+                        "round_scores": round_scores})
+        data["elim"] = {"amount": amount, "bets": {}, "locked": False}
+    return f"✅ {BET_LABELS[kind]}: {', '.join(results)}\n\n" + "\n".join(lines)
 
 
 @dp.message(Command("result"))
@@ -415,162 +535,129 @@ async def cmd_result(message: Message, command: CommandObject):
     if not is_admin(message.from_user.id):
         await message.answer("❌ Только ведущий может вводить результаты.")
         return
-
-    data = load_data()
-    ep = get_current_episode(data)
-
-    if not ep:
-        await message.answer("❌ Нет активного раунда!")
-        return
-
-    if ep["closed"]:
-        await message.answer("❌ Раунд уже закрыт!")
-        return
-
-    if not ep.get("bets_locked"):
-        ep["bets_locked"] = True
-        save_data(data)
-
-    result_text = command.args or ""
+    result_text = (command.args or "").strip()
     if not result_text:
-        await message.answer(
-            "Обычный формат: /result 1й, 2й, 3й, 4й, 5й\n"
-            "Групповой (испытания): /result победитель; прошли1, прошли2; не прошли1, не прошли2\n"
-            "Пустой слот (никто): /result ; ; победители  ← пустые ; для слотов без победителей"
-        )
+        await message.answer("Формат: /result имя1, имя2, ...\nДля групп: /result победитель; прошедшие; выбывшие")
         return
-
-    if ";" in result_text:
-        groups = [g.strip() for g in result_text.split(";")]
-        results = [[m.strip() for m in g.split(",") if m.strip()] for g in groups]
-    else:
-        results = [r.strip() for r in result_text.split(",")]
-
-    round_scores = {p: 0 for p in PLAYERS}
-    win_details = {p: [] for p in PLAYERS}
-
-    for player in PLAYERS:
-        score, wins = score_bets(ep["bets"].get(player, []), results, ep["slots"])
-        round_scores[player] = score
-        win_details[player] = wins
-        data["scores"][player] = data["scores"].get(player, 0) + score
-
-    ep["results"] = results
-    ep["closed"] = True
+    data = load_data()
+    active = active_bets(data)
+    if len(active) != 1:
+        await message.answer("❌ Нет единственной активной ставки. Проверь /status.")
+        return
+    kind, block = active[0]
+    try:
+        text = (settle_round(data, block, result_text) if kind == "round"
+                else settle_special(data, kind, block, result_text))
+    except ValueError as error:
+        await message.answer(f"❌ {error}")
+        return
     save_data(data)
-
-    results_display = format_results(results, ep.get("slots"))
-
-    player_lines = []
-    for p in PLAYERS:
-        wins = ", ".join(win_details[p]) if win_details[p] else "—"
-        player_lines.append(f"  {p}: +{round_scores[p]}  ({wins})")
-    players_display = "\n".join(player_lines)
-
-    scores_sorted = sorted(
-        [(p, data["scores"][p]) for p in PLAYERS],
-        key=lambda x: x[1], reverse=True
-    )
-    scores_display = "\n".join([f"  {i+1}. {p}: {s}" for i, (p, s) in enumerate(scores_sorted)])
-
-    await message.answer(
-        f"✅ Результаты {ep['name']}:\n{results_display}\n\n"
-        f"Очки за раунд:\n{players_display}\n\n"
-        f"🏆 Общий счёт:\n{scores_display}"
-    )
+    await answer_long(message, text + "\n\n" + format_scores(data))
 
 
-@dp.message(Command("myresult"))
+def personal_pick_lines(kind, block, player):
+    if kind == "round":
+        bets = block["bets"].get(player, [])
+        return [f"  {b['slot']}: {b['pair']} ({b['amount']})" for b in bets] or ["  Ставки нет"]
+    pick = block.get("bets", {}).get(player)
+    return [f"  {pick} ({block['amount']})" if pick else "  Ставки нет"]
+
+
+@dp.message(Command("mehistory"))
 async def cmd_myresult(message: Message):
     data = load_data()
-
     player = find_player(message.from_user.id)
     if not player:
         await message.answer("❌ Ты не в списке игроков!")
         return
-
-    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results")]
-    if not closed:
-        await message.answer("❌ Нет завершённых раундов!")
-        return
-
-    lines = [f"📊 Результаты {player}:\n"]
-    total = 0
-
-    for ep in closed:
-        lines.append(f"▸ {ep['name']}")
-        player_bets = ep["bets"].get(player, [])
-        if not player_bets:
-            lines.append("  Ставок не было\n")
+    lines = [f"📊 История {player}:"]
+    for ep in data["episodes"]:
+        if not ep["closed"] or not ep.get("results"):
             continue
+        lines.append(f"\n▸ {ep['name']}")
+        bets = ep["bets"].get(player, [])
+        score, wins = score_bets(bets, ep["results"], ep.get("slots", []))
+        won_slots = {w["slot"] for w in wins}
+        for bet in bets:
+            won = bet["slot"] in won_slots
+            lines.append(f"  {'✅' if won else '❌'} {bet['slot']}: {bet['pair']} +{bet['amount'] if won else 0}")
+        if not bets:
+            lines.append("  Ставок не было")
+        lines.append(f"  Итого: +{score}")
+    for entry in data.get("elim_history", []):
+        pick = entry["bets"].get(player)
+        score = entry["round_scores"].get(player, 0)
+        lines.append(f"\n▸ Вылет #{entry['id']}: {', '.join(entry['results'])}")
+        lines.append(f"  {'✅' if score else '❌'} {pick or 'не ставил'} +{score}")
+    final = data.get("final", {})
+    if final.get("resolved"):
+        pick = final["bets"].get(player)
+        score = final.get("round_scores", {}).get(player)
+        if score is None:
+            score = final["amount"] if pick and fuzzy_match(pick, final["winner"]) else 0
+        lines.append(f"\n▸ Финал: {final['winner']}\n  {pick or 'не ставил'} +{score}")
+    if len(lines) == 1:
+        lines.append("Завершённых ставок пока нет.")
+    lines.append(f"\n🏆 Всего: {data['scores'].get(player, 0)}")
+    await answer_long(message, "\n".join(lines))
 
-        ep_total, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
-        won_slots = {w.split("(")[1].split(")")[0].strip() for w in wins}
-        for bet in player_bets:
-            if bet["slot"] in won_slots:
-                lines.append(f"  ✅ {bet['slot']}: {bet['pair']} +{bet['amount']}")
-            else:
-                lines.append(f"  ❌ {bet['slot']}: {bet['pair']} 0")
-        lines.append(f"  Итого: +{ep_total}\n")
-        total += ep_total
 
-    lines.append(f"🏆 Всего: {data['scores'].get(player, 0)}")
-    await message.answer("\n".join(lines))
-
-
-@dp.message(Command("mybets"))
+@dp.message(Command("me"))
 async def cmd_mybets(message: Message):
     data = load_data()
-    ep = get_current_episode(data)
-
-    if not ep:
-        await message.answer("❌ Нет активного раунда!")
-        return
-
     player = find_player(message.from_user.id)
     if not player:
         await message.answer("❌ Ты не в списке игроков!")
         return
-
-    bets = ep["bets"].get(player, [])
-    if not bets:
-        await message.answer(f"{player}, ты ещё не делал ставок в этом раунде.")
-        return
-
-    bets_display = "\n".join([f"  {b['slot']}: {b['pair']} ({b['amount']})" for b in bets])
-    total = sum(b["amount"] for b in bets)
-    await message.answer(f"Ставки {player} (всего {total}):\n{bets_display}")
+    lines = [f"🎯 {player} — {data['scores'].get(player, 0)} очков"]
+    active = active_bets(data)
+    if active:
+        for kind, block in active:
+            lines.append(f"\n{BET_LABELS[kind]} — моя ставка:")
+            lines.extend(personal_pick_lines(kind, block, player))
+    else:
+        lines.append("\nАктивной ставки нет.")
+        kind = data.get("last_bet_type", "round")
+        block = (get_current_episode(data) if kind == "round" else
+                 data.get("final") if kind == "final" else
+                 (data.get("elim_history") or [None])[-1])
+        if block:
+            lines.append(f"Последняя ставка ({BET_LABELS[kind]}):")
+            lines.extend(personal_pick_lines(kind, block, player))
+    played = [(ep, ep["bets"].get(player, [])) for ep in data["episodes"]
+              if ep["closed"] and ep.get("results") and ep["bets"].get(player)]
+    if played:
+        scores = [score_bets(bets, ep["results"], ep["slots"]) for ep, bets in played]
+        wins = sum(len(w) for _, w in scores)
+        count = sum(len(bets) for _, bets in played)
+        average = sum(score for score, _ in scores) / len(played)
+        best_index = max(range(len(scores)), key=lambda i: scores[i][0])
+        lines.extend([f"\nРаундов: {len(played)}; угадано: {wins}/{count}",
+                      f"Среднее за обычный раунд: {average:.0f}",
+                      f"Лучший: {played[best_index][0]['name']} (+{scores[best_index][0]})"])
+    lines.append("\nПодробная история: /mehistory")
+    await answer_long(message, "\n".join(lines))
 
 
 @dp.message(Command("status"))
 async def cmd_status(message: Message):
-    data = load_data()
-    ep = get_current_episode(data)
-
-    if not ep:
-        await message.answer("❌ Нет активного раунда!")
+    active = active_bets(load_data())
+    if not active:
+        await message.answer("Активной ставки нет. Новый раунд: /newbet; вылет: /elim; финал: /final.")
         return
-
-    if ep["closed"]:
-        status = "🔒 ЗАКРЫТ"
-    elif ep.get("bets_locked"):
-        status = "🟡 СТАВКИ ЗАМОРОЖЕНЫ"
-    else:
-        status = "🟢 ОТКРЫТ"
-
-    slots_display = ", ".join(ep.get("slots", []))
-
-    bets_text = "\n".join([
-        f"  {p}: {'✅' if ep['bets'].get(p) else '⏳'}"
-        for p in PLAYERS
-    ])
-
-    msg = f"📊 {ep['name']} [{status}]\n\nСлоты: {slots_display}\n\nСтавки:\n{bets_text}"
-
-    if ep["results"]:
-        msg += f"\n\nРезультаты:\n{format_results(ep['results'], ep.get('slots'))}"
-
-    await message.answer(msg)
+    lines = []
+    for kind, block in active:
+        locked = block.get("bets_locked" if kind == "round" else "locked", False)
+        title = block["name"] if kind == "round" else BET_LABELS[kind]
+        lines.append(f"{'🔒' if locked else '🟢'} {title}")
+        for player in PLAYERS:
+            has_bet = bool(block["bets"].get(player))
+            lines.append(f"  {player}: {'✅' if has_bet else '⏳'}")
+            if locked and has_bet:
+                lines.extend(personal_pick_lines(kind, block, player))
+    if len(active) > 1:
+        lines.append("⚠️ Найдены старые параллельные ставки; автоматический расчёт отключён.")
+    await answer_long(message, "\n".join(lines))
 
 
 @dp.message(Command("scores"))
@@ -591,35 +678,48 @@ async def cmd_scores(message: Message):
 @dp.message(Command("cancel"))
 async def cmd_cancel(message: Message):
     if not is_admin(message.from_user.id):
-        await message.answer("❌ Только ведущий может отменять раунды.")
+        await message.answer("❌ Только ведущий может отменять ставки.")
         return
-
     data = load_data()
-    ep = get_current_episode(data)
-
-    if not ep:
-        await message.answer("❌ Нет активного раунда!")
+    active = active_bets(data)
+    if len(active) != 1:
+        await message.answer("❌ Нет единственной активной ставки. Проверь /status.")
         return
-
-    if ep["closed"]:
-        await message.answer("❌ Раунд уже закрыт!")
-        return
-
-    data["episodes"].remove(ep)
+    kind, block = active[0]
+    if kind == "round":
+        data["episodes"].remove(block)
+    else:
+        data.pop(kind)
     save_data(data)
-
-    await message.answer("✅ Раунд отменён и удалён.")
+    await message.answer(f"✅ {BET_LABELS[kind]}: ставка отменена. Начисленные ранее очки и история сохранены.")
 
 
 @dp.message(Command("history"))
 async def cmd_history(message: Message, command: CommandObject):
     data = load_data()
 
-    if not data["episodes"]:
+    if not data["episodes"] and not data.get("elim_history"):
         await message.answer("❌ История пуста!")
         return
 
-    # /history 4 — детали конкретного раунда
+    # Elimination entries have a separate stable ID, such as e1.
+    if command.args and command.args.strip().lower().startswith("e"):
+        try:
+            entry_id = int(command.args.strip()[1:])
+        except ValueError:
+            await message.answer("Формат: /history e1")
+            return
+        entry = next((e for e in data.get("elim_history", []) if e["id"] == entry_id), None)
+        if not entry:
+            await message.answer("❌ Вылет не найден.")
+            return
+        lines = [f"📜 Вылет #e{entry_id}: {', '.join(entry['results'])}"]
+        for player in PLAYERS:
+            pick = entry["bets"].get(player, "не ставил")
+            score = entry["round_scores"].get(player, 0)
+            lines.append(f"  {'✅' if score else '❌'} {player}: {pick} +{score}")
+        await answer_long(message, "\n".join(lines))
+        return
     if command.args:
         try:
             ep_id = int(command.args.strip())
@@ -637,15 +737,19 @@ async def cmd_history(message: Message, command: CommandObject):
         if ep.get("results"):
             lines.append(f"\nРезультаты:\n{format_results(ep['results'], ep.get('slots'))}")
 
-        lines.append("\nСтавки:")
+        reveal = ep["closed"] or ep.get("bets_locked", False)
+        lines.append("\nСтавки:" if reveal else "\nСтавки скрыты до закрытия приёма:")
         for p in PLAYERS:
+            if not reveal:
+                lines.append(f"  {p}: {'✅' if ep['bets'].get(p) else '⏳'}")
+                continue
             player_bets = ep["bets"].get(p, [])
             if not player_bets:
                 lines.append(f"  {p}: —")
                 continue
             if ep["closed"] and ep.get("results"):
                 ep_score, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
-                won_slots = {w.split("(")[1].split(")")[0].strip() for w in wins}
+                won_slots = {w["slot"] for w in wins}
                 bet_strs = []
                 for b in player_bets:
                     mark = "✅" if b["slot"] in won_slots else "❌"
@@ -655,7 +759,7 @@ async def cmd_history(message: Message, command: CommandObject):
                 bet_strs = [f"{b['slot']}: {b['pair']} ({b['amount']})" for b in player_bets]
                 lines.append(f"  {p}:\n    " + "\n    ".join(bet_strs))
 
-        await message.answer("\n".join(lines))
+        await answer_long(message, "\n".join(lines))
         return
 
     # /history — список всех раундов
@@ -667,61 +771,74 @@ async def cmd_history(message: Message, command: CommandObject):
             status = "🔄"
         history_lines.append(f"{status} #{ep['id']} {ep['name']}")
 
-    await message.answer("📜 История раундов:\n" + "\n".join(history_lines))
+    for entry in data.get("elim_history", []):
+        history_lines.append(f"✅ #e{entry['id']} Вылет: {', '.join(entry['results'])}")
+    await answer_long(message, "📜 История ставок:\n" + "\n".join(history_lines))
 
 
-@dp.message(Command("stats"))
-async def cmd_stats(message: Message):
+async def place_special_bet(message, command, kind):
     data = load_data()
-
     player = find_player(message.from_user.id)
     if not player:
         await message.answer("❌ Ты не в списке игроков!")
         return
-
-    closed = [ep for ep in data["episodes"] if ep["closed"] and ep.get("results")]
-    if not closed:
-        await message.answer("❌ Нет завершённых раундов!")
+    pick = (command.args or "").strip()
+    if not pick:
+        block = data.get(kind)
+        if kind == "elim" and not (block and block.get("bets")):
+            block = (data.get("elim_history") or [None])[-1]
+        lines = [f"{BET_LABELS[kind]} — моя ставка:"]
+        lines.extend(personal_pick_lines(kind, block, player) if block else ["  Ставки нет"])
+        lines.append(f"Поставить: /{kind} имя")
+        await message.answer("\n".join(lines))
         return
-
-    rounds_played = 0
-    total_bets = 0
-    won_bets = 0
-    best_score = 0
-    best_round = None
-
-    for ep in closed:
-        player_bets = ep["bets"].get(player, [])
-        if not player_bets:
-            continue
-        rounds_played += 1
-        total_bets += len(player_bets)
-        ep_score, wins = score_bets(player_bets, ep["results"], ep.get("slots", []))
-        won_bets += len(wins)
-        if ep_score > best_score:
-            best_score = ep_score
-            best_round = ep["name"]
-
-    if rounds_played == 0:
-        await message.answer(f"{player}: ни одной ставки в завершённых раундах.")
+    active = active_bets(data)
+    if any(other != kind for other, _ in active):
+        await message.answer("❌ Уже есть другая активная ставка. Сначала /result или /cancel.")
         return
+    block = get_final(data) if kind == "final" else get_elim(data)
+    if block.get("resolved") or block.get("locked"):
+        await message.answer("🔒 Приём ставок закрыт.")
+        return
+    block["bets"][player] = pick
+    data["last_bet_type"] = kind
+    save_data(data)
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(f"✅ {player}: ставка принята ({BET_LABELS[kind]}, {block['amount']} очков).")
 
-    total_score = data["scores"].get(player, 0)
-    win_rate = won_bets / total_bets * 100 if total_bets else 0
-    avg_score = total_score / rounds_played
 
-    lines = [
-        f"📊 Статистика {player}:",
-        f"  Раундов сыграно: {rounds_played} из {len(closed)}",
-        f"  Угадано ставок: {won_bets} / {total_bets} ({win_rate:.0f}%)",
-        f"  Среднее за раунд: {avg_score:.0f} очков",
-        f"  Лучший раунд: {best_round} (+{best_score})",
-        f"  Всего очков: {total_score}",
-    ]
-    await message.answer("\n".join(lines))
+@dp.message(Command("final"))
+async def cmd_final(message: Message, command: CommandObject):
+    await place_special_bet(message, command, "final")
+
+
+@dp.message(Command("elim"))
+async def cmd_elim(message: Message, command: CommandObject):
+    await place_special_bet(message, command, "elim")
+
+
+BOT_COMMANDS = [
+    BotCommand(command="me", description="Моя ставка, очки и статистика"),
+    BotCommand(command="mehistory", description="Мои результаты за сезон"),
+    BotCommand(command="scores", description="Общая таблица очков"),
+    BotCommand(command="status", description="Что играем и кто уже поставил"),
+    BotCommand(command="bet", description="Поставить в текущем раунде"),
+    BotCommand(command="elim", description="Поставить на вылет — 300 очков"),
+    BotCommand(command="final", description="Поставить на победителя — 500 очков"),
+    BotCommand(command="newbet", description="Начать новый раунд"),
+    BotCommand(command="stopbet", description="Закрыть приём ставок"),
+    BotCommand(command="result", description="Ввести результат и начислить очки"),
+    BotCommand(command="cancel", description="Отменить текущую ставку"),
+    BotCommand(command="history", description="История раундов и вылетов"),
+    BotCommand(command="help", description="Как играть и пользоваться ботом"),
+]
 
 
 async def main():
+    await bot.set_my_commands(BOT_COMMANDS)
     print("🤖 Бот запущен...")
     await dp.start_polling(bot)
 

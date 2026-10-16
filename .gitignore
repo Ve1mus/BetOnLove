@@ -1,7 +1,11 @@
-data.json
+data.json*
+data-season-*.json*
 __pycache__/
 *.pyc
 .env
+.env.*
+.env *
+!.env.example
 venv/
 .DS_Store
 .venv

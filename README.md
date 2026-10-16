@@ -16,7 +16,7 @@
 pip install -r requirements.txt
 ```
 
-**2. Создай `.env` на основе `.env copy`:**
+**2. Создай `.env` на основе `.env.example`:**
 ```
 BOT_TOKEN=токен_от_BotFather
 PLAYERS=111111111:Игрок1,222222222:Игрок2,333333333:Игрок3,444444444:Игрок4
@@ -179,7 +179,7 @@ A group chat bot. Friends bet on participants of a reality show.
 pip install -r requirements.txt
 ```
 
-**2. Create `.env` from `.env copy`:**
+**2. Create `.env` from `.env.example`:**
 ```
 BOT_TOKEN=your_token_from_BotFather
 PLAYERS=111111111:Alice,222222222:Bob,333333333:Carol,444444444:Dave
